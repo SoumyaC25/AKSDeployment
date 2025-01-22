@@ -1,0 +1,7 @@
+{
+  "default_node_count": 3,
+  "default_pod_count": 30,
+  "default_network_type": "kubenet",
+  "default_location": "eastus",
+  "default_vm_size": "Standard_DS2_v2"
+}
