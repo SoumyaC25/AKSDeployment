@@ -1,67 +1,38 @@
-from azure.identity import AzureCliCredential
+import os
+import re
+from typing import List
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.containerservice import ContainerServiceClient
-from azure.mgmt.resource import ResourceManagementClient
-from ipaddress import ip_network
 
-class AKSClusterDeployer:
-    def __init__(self, subscription_id, resource_group, vnet_cidr):
-        self.subscription_id = subscription_id
-        self.resource_group = resource_group
-        self.vnet_cidr = ip_network(vnet_cidr)
-        self.credential = AzureCliCredential()
-        self.container_client = ContainerServiceClient(self.credential, subscription_id)
-        self.resource_client = ResourceManagementClient(self.credential, subscription_id)
+class UserInputValidator:
+    @staticmethod
+    def validate_aks_name(name: str):
+        if not re.match(r"^[a-zA-Z0-9-]+$", name):
+            raise ValueError("AKS Name must be alphanumeric with dashes.")
 
-    def validate_inputs(self, aks_name, nodepools, cluster_type, rbac_type, rbac_groups):
-        if len(aks_name.strip()) == 0:
-            raise ValueError("AKS Name cannot be empty.")
+    @staticmethod
+    def validate_subscription_id(subscription_id: str):
+        if not re.match(r"^[a-f0-9-]{36}$", subscription_id):
+            raise ValueError("Invalid Subscription ID format.")
 
-        for pool in nodepools:
-            if pool['nodes'] < 3:
-                raise ValueError(f"Node count for {pool['name']} must be at least 3.")
-            if pool['pods'] <= 10:
-                raise ValueError(f"Pod count for {pool['name']} must be greater than 10.")
+    @staticmethod
+    def validate_resource_group(name: str):
+        if not name:
+            raise ValueError("Resource group name cannot be empty.")
 
-        if cluster_type == 'Shared' and not rbac_groups:
-            raise ValueError("Admin users must be specified for shared cluster.")
+    @staticmethod
+    def validate_node_pool(node_pool_name: str, nodes: int, network_type: str, pod_count: int):
+        if not re.match(r"^[a-zA-Z0-9-]+$", node_pool_name):
+            raise ValueError("Node pool name must be alphanumeric with dashes.")
+        if nodes < 3:
+            raise ValueError("Node pool must have at least 3 nodes.")
+        if network_type not in ["kubenet", "azureCNI", "Overlay"]:
+            raise ValueError("Invalid network type.")
+        if pod_count <= 10:
+            raise ValueError("Pod count must be greater than 10.")
 
-        if rbac_type == 'kuberbac' and not rbac_groups:
-            raise ValueError("RBAC user groups must be specified for 'kuberbac' type.")
-
-    def calculate_required_ips(self, nodepools):
-        total_ips = sum(pool['nodes'] * pool['pods'] for pool in nodepools)
-        return total_ips
-
-    def validate_vnet_space(self, required_ips):
-        available_ips = self.vnet_cidr.num_addresses - 2  # Exclude network and broadcast addresses
-        if required_ips > available_ips:
-            raise ValueError("Not enough IP addresses in the VNet to deploy the cluster.")
-
-    def deploy_cluster(self, aks_name, nodepools):
-        print(f"Deploying AKS Cluster: {aks_name}")
-        for pool in nodepools:
-            print(f"Creating NodePool: {pool['name']} with {pool['nodes']} nodes and {pool['pods']} pods per node.")
-
-        # Replace this section with actual AKS deployment logic using Azure SDK
-        aks_parameters = {
-            "location": "eastus",
-            "node_resource_group": f"{self.resource_group}-nodes",
-            "agent_pool_profiles": [
-                {
-                    "name": pool['name'],
-                    "count": pool['nodes'],
-                    "vm_size": "Standard_DS2_v2",
-                    "os_type": "Linux",
-                    "max_pods": pool['pods'],
-                    "type": pool['network_type']
-                }
-                for pool in nodepools
-            ],
-            "dns_prefix": aks_name
-        }
-
-        try:
-            self.container_client.managed_clusters.begin_create_or_update(self.resource_group, aks_name, aks_parameters)
-            print("Deployment initiated successfully.")
-        except Exception as e:
-            raise RuntimeError(f"Deployment failed: {e}")
+    @staticmethod
+    def validate_rbac_type(rbac_type: str, user_groups: List[str]):
+        if rbac_type == "kuberbac" and not user_groups:
+            raise ValueError("User groups are required for kuberbac RBAC type.")
