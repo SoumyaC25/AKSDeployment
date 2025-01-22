@@ -1,17 +1,22 @@
-from ipaddress import ip_network
+import os
+import re
+from typing import List
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.containerservice import ContainerServiceClient
 
-def calculate_required_ips(nodepools):
-    """
-    Calculates the total number of IPs required for the AKS cluster based on the nodepools.
-    """
-    total_ips = sum(pool['nodes'] * pool['pods'] for pool in nodepools)
-    return total_ips
+class VNetManager:
+    def __init__(self, subscription_id: str):
+        self.credential = DefaultAzureCredential()
+        self.network_client = NetworkManagementClient(self.credential, subscription_id)
 
-def validate_vnet_space(vnet_cidr, required_ips):
-    """
-    Validates if the VNet has enough IP space to accommodate the required IPs.
-    """
-    vnet = ip_network(vnet_cidr)
-    available_ips = vnet.num_addresses - 2  # Subtract network and broadcast addresses
-    if required_ips > available_ips:
-        raise ValueError(f"Not enough IP addresses in the VNet. Required: {required_ips}, Available: {available_ips}.")
+    def get_vnet_details(self, resource_group: str, vnet_name: str):
+        return self.network_client.virtual_networks.get(resource_group, vnet_name)
+
+    def calculate_available_ips(self, vnet):
+        total_ips = 0
+        for subnet in vnet.subnets:
+            address_prefix = subnet.address_prefix
+            subnet_size = 2 ** (32 - int(address_prefix.split("/")[1]))
+            total_ips += subnet_size
+        return total_ips
