@@ -1,80 +1,66 @@
 import os
-import sys
-from azure.identity import AzureCliCredential
+import re
+from typing import List
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.containerservice import ContainerServiceClient
-from azure.mgmt.resource import ResourceManagementClient
-from ipaddress import ip_network
 
-class AKSClusterDeployer:
-    def __init__(self, subscription_id, resource_group, vnet_cidr):
-        self.subscription_id = subscription_id
-        self.resource_group = resource_group
-        self.vnet_cidr = ip_network(vnet_cidr)
-        self.credential = AzureCliCredential()
-        self.container_client = ContainerServiceClient(self.credential, subscription_id)
-        self.resource_client = ResourceManagementClient(self.credential, subscription_id)
+class AKSClusterManager:
+    def __init__(self, subscription_id: str):
+        self.credential = DefaultAzureCredential()
+        self.aks_client = ContainerServiceClient(self.credential, subscription_id)
 
-    def validate_inputs(self, aks_name, nodepools, cluster_type, rbac_type, rbac_groups):
-        if len(aks_name) == 0:
-            raise ValueError("AKS Name cannot be empty.")
+    def create_cluster(self, resource_group: str, cluster_name: str, params):
+        return self.aks_client.managed_clusters.begin_create_or_update(
+            resource_group, cluster_name, params
+        )
 
-        for pool in nodepools:
-            if pool['nodes'] < 3:
-                raise ValueError(f"Node count for {pool['name']} must be at least 3.")
-            if pool['pods'] <= 10:
-                raise ValueError(f"Pod count for {pool['name']} must be greater than 10.")
 
-        if cluster_type == 'Shared' and not rbac_groups:
-            raise ValueError("Admin users must be specified for shared cluster.")
+# Main function for user input and processing
+def main():
+    print("Enter the following details to deploy an AKS cluster:")
+    aks_name = input("AKS Name: ")
+    subscription_id = input("Subscription ID: ")
+    resource_group = input("Resource Group Name: ")
+    vnet_name = input("VNet Name: ")
 
-        if rbac_type == 'kuberbac' and not rbac_groups:
-            raise ValueError("RBAC user groups must be specified for 'kuberbac' type.")
+    node_pools = []
+    for i in range(2):
+        print(f"Node Pool {i + 1}:")
+        name = input("  Name: ")
+        nodes = int(input("  Number of nodes (min 3): "))
+        network_type = input("  Network type (kubenet, azureCNI, Overlay): ")
+        pod_count = int(input("  Number of pods (min > 10): "))
+        node_pools.append((name, nodes, network_type, pod_count))
 
-    def calculate_required_ips(self, nodepools):
-        total_ips = 0
-        for pool in nodepools:
-            total_ips += pool['nodes'] * pool['pods']
-        return total_ips
+    rbac_type = input("RBAC Type (standard, kuberbac): ")
+    user_groups = []
+    if rbac_type == "kuberbac":
+        user_groups = input("Comma-separated user groups: ").split(",")
 
-    def validate_vnet_space(self, required_ips):
-        available_ips = self.vnet_cidr.num_addresses - 2  # Exclude network and broadcast addresses
-        if required_ips > available_ips:
-            raise ValueError("Not enough IP addresses in the VNet to deploy the cluster.")
+    # Validation
+    try:
+        UserInputValidator.validate_aks_name(aks_name)
+        UserInputValidator.validate_subscription_id(subscription_id)
+        UserInputValidator.validate_resource_group(resource_group)
+        for name, nodes, network_type, pod_count in node_pools:
+            UserInputValidator.validate_node_pool(name, nodes, network_type, pod_count)
+        UserInputValidator.validate_rbac_type(rbac_type, user_groups)
+    except ValueError as e:
+        print(f"Input validation error: {e}")
+        return
 
-    def deploy_cluster(self, aks_name, nodepools):
-        # Replace with actual implementation of AKS deployment using Azure SDK
-        print(f"Deploying AKS Cluster: {aks_name}")
-        print(f"NodePools: {nodepools}")
-        # ...
+    # VNet Management
+    vnet_manager = VNetManager(subscription_id)
+    vnet = vnet_manager.get_vnet_details(resource_group, vnet_name)
+    available_ips = vnet_manager.calculate_available_ips(vnet)
+
+    required_ips = sum(pool[1] * 30 for pool in node_pools)  # Example calculation
+    if available_ips < required_ips:
+        print("Insufficient IPs in the VNet to deploy the cluster.")
+        return
+
+    print("Validated and ready to deploy the cluster.")
 
 if __name__ == "__main__":
-    # Read inputs
-    aks_name = input("Enter AKS Name: ")
-    subscription_id = input("Enter Subscription ID: ")
-    resource_group = input("Enter Resource Group Name: ")
-    vnet_cidr = input("Enter VNet CIDR (e.g., 10.0.0.0/16): ")
-    
-    nodepools = []
-    for i in range(2):
-        pool_name = input(f"Enter name for NodePool {i+1}: ")
-        nodes = int(input(f"Enter number of nodes for {pool_name} (minimum 3): "))
-        network_type = input(f"Enter network type for {pool_name} (kubenet, azureCNI, Overlay): ")
-        pods = int(input(f"Enter number of pods for {pool_name} (greater than 10): "))
-        nodepools.append({"name": pool_name, "nodes": nodes, "network_type": network_type, "pods": pods})
-
-    cluster_type = input("Enter Cluster Type (Shared/Exclusive): ")
-    admin_users = input("Enter admin users (comma-separated) for Shared cluster: ") if cluster_type == 'Shared' else None
-
-    rbac_type = input("Enter RBAC type (kuberbac/None): ")
-    rbac_groups = input("Enter RBAC groups (comma-separated) for kuberbac: ") if rbac_type == 'kuberbac' else None
-
-    deployer = AKSClusterDeployer(subscription_id, resource_group, vnet_cidr)
-
-    try:
-        deployer.validate_inputs(aks_name, nodepools, cluster_type, rbac_type, rbac_groups)
-        required_ips = deployer.calculate_required_ips(nodepools)
-        deployer.validate_vnet_space(required_ips)
-        deployer.deploy_cluster(aks_name, nodepools)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    main()
